@@ -164,11 +164,26 @@ Reader CreateReader(FILE* file) {
 }
 
 u8 ReaderNextByte(Reader* r) {
-    if(r->pos >= r->size) {
+    if(r->pos + 1 > r->size) {
         return 0;
     }
 
     return r->bytes[r->pos++];
+}
+
+u16 ReaderNextWord(Reader* r, u8 wide) {
+    int size = wide == 1 ? 2 : 1;
+    if(r->pos + size > r->size) {
+        return 0;
+    }
+
+    u16 ret  = r->bytes[r->pos++];
+    if(wide) {
+        u16 high = r->bytes[r->pos++];
+        ret = (high << 8) | ret;
+    }
+
+    return ret;
 }
 
 int ReaderIsEmpty(Reader* r) {
@@ -202,9 +217,7 @@ Instruction ParseNextInstruction(Reader* reader) {
         if(mod == 0b00) {
             // Direct Address
             if(rm == 0b110) {
-                u32 disp = ReaderNextByte(reader);
-                u8 dispHigh = ReaderNextByte(reader);
-                disp = disp | (((u32)dispHigh) << 8);
+                u16 disp = ReaderNextWord(reader, 1);
 
                 ret.operands[0].type = OpT_DirectAddress;
                 ret.operands[0].value = disp;
@@ -215,11 +228,7 @@ Instruction ParseNextInstruction(Reader* reader) {
             }
         }
         else if(mod == 0b01 || mod == 0b10) {
-            u32 disp = ReaderNextByte(reader);
-            if(mod == 0b10) {
-                u8 dispHigh = ReaderNextByte(reader);
-                disp = disp | (((u32)dispHigh) << 8);
-            }
+            u16 disp = ReaderNextWord(reader, mod == 0b10);
 
             ret.operands[0].type = OpT_EffectiveAddress;
             ret.operands[0].address.type = rm + 1;
@@ -244,11 +253,7 @@ Instruction ParseNextInstruction(Reader* reader) {
         u8 reg = (byte & 0b111);
         u8 w = ((byte >> 3) & 0b1);
 
-        u16 data = (u16) ReaderNextByte(reader);
-        if(w == 1) {
-            u16 dataHigh = (u16) ReaderNextByte(reader);
-            data = data | (dataHigh << 8);
-        }
+        u16 data = ReaderNextWord(reader, w == 1);
 
         ret.inst = Inst_Mov;
         ret.operands[0].type = OpT_Register;
@@ -279,7 +284,7 @@ int main(int argc, char* argv[]) {
     do {
         inst = ParseNextInstruction(&reader);
         PrintInstruction(inst);
-    } while(ReaderIsEmpty(&reader) == false && inst.inst != OpT_Invalid);
+    } while(ReaderIsEmpty(&reader) == 0 && inst.inst != OpT_Invalid);
 
     return 0;
 }
