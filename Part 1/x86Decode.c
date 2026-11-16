@@ -129,11 +129,21 @@ void PrintInstruction(Instruction inst) {
         }
 
         switch(op.type) {
-        case OpT_Invalid:          printf("{INVALID OPERAND}");        break;
-        case OpT_Immediate:        printf("%hu", op.value);            break;
+        case OpT_Invalid: printf("{INVALID OPERAND}"); break;
+        
+        case OpT_Immediate:
+            char* explicitSize = "";
+            u8 isTargetMemory = inst.operands[0].type != OpT_Register;
+            if(isTargetMemory) {
+                explicitSize = op.value > 255 ? "word " : "byte ";
+            }
+            printf("%s%hu", explicitSize, op.value);
+        break;
+        
         case OpT_Register:         printf("%s", RegisterName(op.reg)); break;
         case OpT_EffectiveAddress: PrintAdress(op.address);            break;
         case OpT_DirectAddress:    printf("[%hu]", op.value);          break;
+        
         default: Assert(!"Not supported operand type");
         }
     }
@@ -177,10 +187,10 @@ u16 ReaderNextWord(Reader* r, u8 wide) {
         return 0;
     }
 
-    u16 ret  = r->bytes[r->pos++];
+    u16 ret = r->bytes[r->pos++];
     if(wide) {
         u16 high = r->bytes[r->pos++];
-        ret = (high << 8) | ret;
+        ret = ret | (high << 8);
     }
 
     return ret;
@@ -190,10 +200,40 @@ int ReaderIsEmpty(Reader* r) {
     return r->pos >= r->size;
 }
 
-void PrintBinary(u8 num) {
-    for (int i = sizeof(u8) * 8 - 1; i >= 0; i--) {
+void PrintBinary(u16 num) {
+    for (int i = sizeof(u16) * 8 - 1; i >= 0; i--) {
         printf("%d", (num >> i) & 1);
     }
+}
+
+Operand ParseEffectiveAddress(Reader* reader, u8 mod, u8 rm, u8 w) {
+    Operand ret = {0};
+    if(mod == 0b00) {
+        // Direct Address
+        if(rm == 0b110) {
+            u16 disp = ReaderNextWord(reader, 1);
+
+            ret.type = OpT_DirectAddress;
+            ret.value = disp;
+        }
+        else {
+            ret.type = OpT_EffectiveAddress;
+            ret.address.type = rm + 1;
+        }
+    }
+    else if(mod == 0b01 || mod == 0b10) {
+        u16 disp = ReaderNextWord(reader, mod == 0b10);
+
+        ret.type = OpT_EffectiveAddress;
+        ret.address.type = rm + 1;
+        ret.address.displacement = disp;
+    }
+    else if(mod == 0b11) {
+        ret.type = OpT_Register;
+        ret.reg.reg = RegisterAccessTable[w][rm];
+    }
+
+    return ret;
 }
 
 Instruction ParseNextInstruction(Reader* reader) {
@@ -213,32 +253,7 @@ Instruction ParseNextInstruction(Reader* reader) {
         u8 reg = ((byte >> 3) & 0b111);
         u8 mod = ((byte >> 6) & 0b11);
 
-        Operand dest;
-        if(mod == 0b00) {
-            // Direct Address
-            if(rm == 0b110) {
-                u16 disp = ReaderNextWord(reader, 1);
-
-                ret.operands[0].type = OpT_DirectAddress;
-                ret.operands[0].value = disp;
-            }
-            else {
-                ret.operands[0].type = OpT_EffectiveAddress;
-                ret.operands[0].address.type = rm + 1;
-            }
-        }
-        else if(mod == 0b01 || mod == 0b10) {
-            u16 disp = ReaderNextWord(reader, mod == 0b10);
-
-            ret.operands[0].type = OpT_EffectiveAddress;
-            ret.operands[0].address.type = rm + 1;
-            ret.operands[0].address.displacement = disp;
-        }
-        else if(mod == 0b11) {
-            ret.operands[0].type = OpT_Register;
-            ret.operands[0].reg.reg = RegisterAccessTable[w][rm];
-        }
-
+        ret.operands[0] = ParseEffectiveAddress(reader, mod, rm, w);
         ret.operands[1].type = OpT_Register;
         ret.operands[1].reg.reg = RegisterAccessTable[w][reg];
 
@@ -248,19 +263,55 @@ Instruction ParseNextInstruction(Reader* reader) {
             ret.operands[1] = tmp;
         }
     }
+    // immdiate to register/memory
+    else if((byte & 0b11111110) == 0b11000110) {
+        ret.inst = Inst_Mov;
+
+        u8 w = (byte & 0b1);
+        byte = ReaderNextByte(reader);
+        u8 rm  = (byte & 0b111);
+        u8 mod = ((byte >> 6) & 0b11);
+
+        ret.operands[0] = ParseEffectiveAddress(reader, mod, rm, w);
+        
+        u16 data = ReaderNextWord(reader, w == 1);
+        ret.operands[1].type = OpT_Immediate;
+        ret.operands[1].value = data;
+    }
     // immediate to register
     else if((byte & 0b11110000) == 0b10110000) {
+        ret.inst = Inst_Mov;
+
         u8 reg = (byte & 0b111);
         u8 w = ((byte >> 3) & 0b1);
 
         u16 data = ReaderNextWord(reader, w == 1);
 
-        ret.inst = Inst_Mov;
         ret.operands[0].type = OpT_Register;
         ret.operands[0].reg.reg = RegisterAccessTable[w][reg];
 
         ret.operands[1].type = OpT_Immediate;
         ret.operands[1].value = data;
+    }
+    else if((byte & 0b11111100) == 0b10100000) {
+        ret.inst = Inst_Mov;
+
+        u8 w = (byte & 0b1);
+        u8 toMemory = ((byte >> 1) & 0b1);
+
+        u16 address = ReaderNextWord(reader, w == 1);
+
+        ret.operands[0].type = OpT_Register;
+        ret.operands[0].reg.reg = Reg_AX;
+
+        ret.operands[1].type = OpT_DirectAddress;
+        ret.operands[1].value = address;
+
+        if(toMemory) {
+            Operand tmp = ret.operands[0];
+            ret.operands[0] = ret.operands[1];
+            ret.operands[1] = tmp;
+        }
     }
 
     return ret;
