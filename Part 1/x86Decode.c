@@ -151,9 +151,9 @@ void PrintInstruction(Instruction inst) {
 }
 
 typedef struct Reader_T {
-    char* bytes;
+    u8* bytes;
     long size;
-    int pos;
+    long pos;
 } Reader;
 
 Reader CreateReader(FILE* file) {
