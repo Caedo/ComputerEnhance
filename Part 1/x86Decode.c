@@ -86,6 +86,12 @@ void PrintAdress(Address ad) {
     }
 }
 
+typedef struct Immedate_t {
+    u8 explicit;
+    u8 wide;
+    u16 value;
+} ImmediateValue;
+
 typedef enum OperandType_t {
     OpT_Invalid,
     OpT_Immediate,
@@ -97,7 +103,8 @@ typedef enum OperandType_t {
 typedef struct Operand_t {
     OperandType type;
     union {
-        u16 value;
+        u16 direct;
+        ImmediateValue immediate;
         RegisterAccess reg;
         Address address;
     };
@@ -107,12 +114,64 @@ typedef enum InstructionMnem_t {
     Inst_Invalid,
     Inst_Mov,
 
+    Inst_Add,
+    Inst_Sub,
+    Inst_Cmp,
+
+    Inst_Jnz,
+    Inst_Je,
+    Inst_Jl,
+    Inst_Jle,
+    Inst_Jb,
+    Inst_Jbe,
+    Inst_Jp,
+    Inst_Jo,
+    Inst_Js,
+    Inst_Jne,
+    Inst_Jnl,
+    Inst_Jg,
+    Inst_Jnb,
+    Inst_Ja,
+    Inst_Jnp,
+    Inst_Jno,
+    Inst_Jns,
+    Inst_Loop,
+    Inst_Loopz,
+    Inst_Loopnz,
+    Inst_Jcxz,
+
+
     Inst_COUNT
 } InstructionMnem;
 
 char* InstructionName[] = {
     "INVALID",
-    "mov"
+    "mov",
+    "add",
+    "sub",
+    "cmp",
+
+    "jnz",
+    "je",
+    "jl",
+    "jle",
+    "jb",
+    "jbe",
+    "jp",
+    "jo",
+    "js",
+    "jne",
+    "jnl",
+    "jg",
+    "jnb",
+    "jg",
+    "jnp",
+    "jno",
+    "jns",
+    "loop",
+    "loopz",
+    "loopnz",
+    "jcxz",
 };
 
 typedef struct Instruction_t {
@@ -124,25 +183,27 @@ void PrintInstruction(Instruction inst) {
     printf("%s ", InstructionName[inst.inst]);
     for(int i = 0; i < 2; i++) {
         Operand op = inst.operands[i];
-        if(i != 0 && op.type != OpT_Invalid) {
+
+        if(op.type == OpT_Invalid) {
+            break;
+        }
+
+        if(i != 0) {
             printf(", ");
         }
 
         switch(op.type) {
-        case OpT_Invalid: printf("{INVALID OPERAND}"); break;
-        
         case OpT_Immediate:
             char* explicitSize = "";
-            u8 isTargetMemory = inst.operands[0].type != OpT_Register;
-            if(isTargetMemory) {
-                explicitSize = op.value > 255 ? "word " : "byte ";
+            if(op.immediate.explicit) {
+                explicitSize = op.immediate.wide ? "word " : "byte ";
             }
-            printf("%s%hu", explicitSize, op.value);
+            printf("%s%hu", explicitSize, op.immediate.value);
         break;
-        
+
         case OpT_Register:         printf("%s", RegisterName(op.reg)); break;
         case OpT_EffectiveAddress: PrintAdress(op.address);            break;
-        case OpT_DirectAddress:    printf("[%hu]", op.value);          break;
+        case OpT_DirectAddress:    printf("[%hu]", op.direct);          break;
         
         default: Assert(!"Not supported operand type");
         }
@@ -211,10 +272,10 @@ Operand ParseEffectiveAddress(Reader* reader, u8 mod, u8 rm, u8 w) {
     if(mod == 0b00) {
         // Direct Address
         if(rm == 0b110) {
-            u16 disp = ReaderNextWord(reader, 1);
+            u16 address = ReaderNextWord(reader, 1);
 
             ret.type = OpT_DirectAddress;
-            ret.value = disp;
+            ret.direct = address;
         }
         else {
             ret.type = OpT_EffectiveAddress;
@@ -236,6 +297,15 @@ Operand ParseEffectiveAddress(Reader* reader, u8 mod, u8 rm, u8 w) {
     return ret;
 }
 
+typedef union InstMods_t {
+    u8 byte;
+    struct {
+        u8 rm: 3;
+        u8 reg: 3;
+        u8 mod: 2;
+    };
+} InstMods;
+
 Instruction ParseNextInstruction(Reader* reader) {
     Instruction ret = {0};
 
@@ -247,15 +317,12 @@ Instruction ParseNextInstruction(Reader* reader) {
         u8 w = (byte & 0b1);
         u8 d = ((byte >> 1) & 0b1);
 
-        byte = ReaderNextByte(reader);
+        InstMods mods = {0};
+        mods.byte = ReaderNextByte(reader);
 
-        u8 rm  = (byte & 0b111);
-        u8 reg = ((byte >> 3) & 0b111);
-        u8 mod = ((byte >> 6) & 0b11);
-
-        ret.operands[0] = ParseEffectiveAddress(reader, mod, rm, w);
+        ret.operands[0] = ParseEffectiveAddress(reader, mods.mod, mods.rm, w);
         ret.operands[1].type = OpT_Register;
-        ret.operands[1].reg.reg = RegisterAccessTable[w][reg];
+        ret.operands[1].reg.reg = RegisterAccessTable[w][mods.reg];
 
         if(d == 1) {
             Operand tmp = ret.operands[0];
@@ -273,10 +340,12 @@ Instruction ParseNextInstruction(Reader* reader) {
         u8 mod = ((byte >> 6) & 0b11);
 
         ret.operands[0] = ParseEffectiveAddress(reader, mod, rm, w);
-        
+
         u16 data = ReaderNextWord(reader, w == 1);
         ret.operands[1].type = OpT_Immediate;
-        ret.operands[1].value = data;
+        ret.operands[1].immediate.explicit = 1;
+        ret.operands[1].immediate.wide = w == 1;
+        ret.operands[1].immediate.value = data;
     }
     // immediate to register
     else if((byte & 0b11110000) == 0b10110000) {
@@ -291,8 +360,9 @@ Instruction ParseNextInstruction(Reader* reader) {
         ret.operands[0].reg.reg = RegisterAccessTable[w][reg];
 
         ret.operands[1].type = OpT_Immediate;
-        ret.operands[1].value = data;
+        ret.operands[1].immediate.value = data;
     }
+    // Mov Direct address to accumulator
     else if((byte & 0b11111100) == 0b10100000) {
         ret.inst = Inst_Mov;
 
@@ -305,13 +375,200 @@ Instruction ParseNextInstruction(Reader* reader) {
         ret.operands[0].reg.reg = Reg_AX;
 
         ret.operands[1].type = OpT_DirectAddress;
-        ret.operands[1].value = address;
+        ret.operands[1].direct = address;
 
         if(toMemory) {
             Operand tmp = ret.operands[0];
             ret.operands[0] = ret.operands[1];
             ret.operands[1] = tmp;
         }
+    }
+    // Add reg/mem with register to either
+    else if((byte & 0b11111100) == 0b00000000 ||
+            (byte & 0b11111100) == 0b00101000 ||
+            (byte & 0b11111100) == 0b00111000 )
+    {
+        if((byte & 0b00111000) == 0b00000000) {
+            ret.inst = Inst_Add;
+        }
+        else if((byte & 0b00111000) == 0b00101000) {
+            ret.inst = Inst_Sub;
+        }
+        else if((byte & 0b00111000) == 0b00111000) {
+            ret.inst = Inst_Cmp;
+        }
+
+        u8 w = (byte & 0b1);
+        u8 d = ((byte >> 1) & 0b1);
+
+        InstMods mods = {0};
+        mods.byte = ReaderNextByte(reader);
+
+        ret.operands[0] = ParseEffectiveAddress(reader, mods.mod, mods.rm, w);
+        ret.operands[1].type = OpT_Register;
+        ret.operands[1].reg.reg = RegisterAccessTable[w][mods.reg];
+
+        if(d == 1) {
+            Operand tmp = ret.operands[0];
+            ret.operands[0] = ret.operands[1];
+            ret.operands[1] = tmp;
+        }
+    }
+    // Add Immediate to register/memory
+    else if((byte & 0b11111100) == 0b10000000) {
+        u8 w = (byte & 0b1);
+        u8 s = ((byte >> 1) & 0b1);
+
+        byte = ReaderNextByte(reader);
+        u8 rm  = (byte & 0b111);
+        u8 inst  = ((byte >> 3) & 0b111);
+        u8 mod = ((byte >> 6) & 0b11);
+
+        if(inst == 0b000) {
+            ret.inst = Inst_Add;
+        }
+        else if(inst == 0b101) {
+            ret.inst = Inst_Sub;
+        }
+        else if(inst == 0b111) {
+            ret.inst = Inst_Cmp;
+        }
+
+        ret.operands[0] = ParseEffectiveAddress(reader, mod, rm, w);
+
+        u16 data = ReaderNextWord(reader, s == 0 && w == 1);
+        ret.operands[1].type = OpT_Immediate;
+        ret.operands[1].immediate.explicit = mod != 0b11;
+        ret.operands[1].immediate.wide     = s == 1; // s indicates sign extension
+        ret.operands[1].immediate.value    = data;
+    }
+    // Add immediate to accumulator
+    else if((byte & 0b11111110) == 0b00000100 ||
+            (byte & 0b11111110) == 0b00101100 ||
+            (byte & 0b11111110) == 0b00111100 )
+    {
+        if((byte & 0b00111000) == 0b00000000) {
+            ret.inst = Inst_Add;
+        }
+        else if((byte & 0b00111000) == 0b00101000) {
+            ret.inst = Inst_Sub;
+        }
+        else if((byte & 0b00111000) == 0b00111000) {
+            ret.inst = Inst_Cmp;
+        }
+
+        u8 w = (byte & 0b1);
+        u16 value = ReaderNextWord(reader, w == 1);
+
+        ret.operands[0].type = OpT_Register;
+        ret.operands[0].reg.reg = Reg_AX;
+
+        ret.operands[1].type = OpT_Immediate;
+        ret.operands[1].immediate.value = value;
+    }
+    // jumps...
+    else if(byte == 0b01110100) {
+        ret.inst = Inst_Je;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111100) {
+        ret.inst = Inst_Jl;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111110) {
+        ret.inst = Inst_Jle;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+
+    else if(byte == 0b01110010) {
+        ret.inst = Inst_Jb;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+
+    else if(byte == 0b01110110) {
+        ret.inst = Inst_Jbe;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+
+    else if(byte == 0b01111010) {
+        ret.inst = Inst_Jp;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01110000) {
+        ret.inst = Inst_Jo;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111000) {
+        ret.inst = Inst_Js;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01110101) {
+        ret.inst = Inst_Jne;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111101) {
+        ret.inst = Inst_Jnl;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111111) {
+        ret.inst = Inst_Jg;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01110011) {
+        ret.inst = Inst_Jnb;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01110111) {
+        ret.inst = Inst_Ja;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111011) {
+        ret.inst = Inst_Jnp;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01110001) {
+        ret.inst = Inst_Jno;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b01111001) {
+        ret.inst = Inst_Jns;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b11100010) {
+        ret.inst = Inst_Loop;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b11100001) {
+        ret.inst = Inst_Loopz;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b11100000) {
+        ret.inst = Inst_Loopnz;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
+    }
+    else if(byte == 0b11100011) {
+        ret.inst = Inst_Jcxz;
+        ret.operands[0].type = OpT_Immediate;
+        ret.operands[0].immediate.value = ReaderNextByte(reader);
     }
 
     return ret;
