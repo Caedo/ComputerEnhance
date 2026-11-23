@@ -3,3 +3,6 @@ Part 1/listings
 *.exe
 *.obj
 nasm
+.vs
+*.rdi
+*.radproject
